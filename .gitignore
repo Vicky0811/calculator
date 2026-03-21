@@ -1,0 +1,5 @@
+variables.tf
+main.tf
+terraform.tfstate
+terraform.tfstate.backup
+deploy.sh
