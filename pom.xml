@@ -4,54 +4,37 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
                              https://maven.apache.org/xsd/maven-4.0.0.xsd">
   <modelVersion>4.0.0</modelVersion>
-
-  <!-- ── Identity ────────────────────────────────────────── -->
   <groupId>com.calculator</groupId>
   <artifactId>java-calculator</artifactId>
   <version>1.0.0</version>
-  <packaging>jar</packaging>               <!-- ← JAR, not WAR -->
+  <packaging>jar</packaging>
 
-  <name>Java Calculator</name>
-  <description>JSP calculator with embedded Tomcat, packaged as executable JAR</description>
-
-  <!-- ── Properties ──────────────────────────────────────── -->
   <properties>
     <java.version>21</java.version>
-    <maven.compiler.source>${java.version}</maven.compiler.source>
-    <maven.compiler.target>${java.version}</maven.compiler.target>
+    <maven.compiler.source>21</maven.compiler.source>
+    <maven.compiler.target>21</maven.compiler.target>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-
-    <!-- Pin Tomcat version — Tomcat 10.x uses Jakarta EE 9 namespaces -->
     <tomcat.version>10.1.18</tomcat.version>
     <junit.version>5.10.0</junit.version>
   </properties>
 
-  <!-- ── Dependencies ────────────────────────────────────── -->
   <dependencies>
-
-    <!-- Embedded Tomcat core -->
     <dependency>
       <groupId>org.apache.tomcat.embed</groupId>
       <artifactId>tomcat-embed-core</artifactId>
       <version>${tomcat.version}</version>
     </dependency>
-
-    <!-- Jasper — JSP engine for embedded Tomcat -->
     <dependency>
       <groupId>org.apache.tomcat.embed</groupId>
       <artifactId>tomcat-embed-jasper</artifactId>
       <version>${tomcat.version}</version>
     </dependency>
-
-    <!-- Jakarta Servlet API (provided by embedded Tomcat at runtime) -->
     <dependency>
       <groupId>jakarta.servlet</groupId>
       <artifactId>jakarta.servlet-api</artifactId>
       <version>6.0.0</version>
       <scope>provided</scope>
     </dependency>
-
-    <!-- JUnit 5 -->
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter-api</artifactId>
@@ -64,40 +47,20 @@
       <version>${junit.version}</version>
       <scope>test</scope>
     </dependency>
-
   </dependencies>
 
-  <!-- ── Build ───────────────────────────────────────────── -->
   <build>
     <plugins>
-
-      <!-- Compiler -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-compiler-plugin</artifactId>
         <version>3.11.0</version>
       </plugin>
-
-      <!-- Surefire — JUnit 5 test runner -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.1.2</version>
       </plugin>
-
-      <!--
-        Maven Shade Plugin
-        ══════════════════
-        Produces a fat executable JAR:  target/calculator.jar
-
-        Key concern with embedded Tomcat + JSP:
-          Tomcat's ServiceLoader files (META-INF/services/) must be MERGED,
-          not overwritten. The ServicesResourceTransformer handles this.
-
-        JSP files are bundled via the <resource> block below so they are
-        available on the classpath inside the JAR. At runtime, Main.java
-        extracts them to a temp directory and points Tomcat at that dir.
-      -->
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-shade-plugin</artifactId>
@@ -109,9 +72,7 @@
             <configuration>
               <finalName>calculator</finalName>
               <createDependencyReducedPom>false</createDependencyReducedPom>
-
               <filters>
-                <!-- Strip digital signatures so merged JAR doesn't fail security checks -->
                 <filter>
                   <artifact>*:*</artifact>
                   <excludes>
@@ -121,39 +82,23 @@
                   </excludes>
                 </filter>
               </filters>
-
               <transformers>
-                <!-- Set the main class -->
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                   <mainClass>com.calculator.Main</mainClass>
                 </transformer>
-                <!-- Merge Tomcat's META-INF/services/ entries (critical for JSP) -->
                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
               </transformers>
-
             </configuration>
           </execution>
         </executions>
       </plugin>
-
     </plugins>
-
-    <!--
-      Bundle the webapp directory (JSP + WEB-INF) into the JAR under
-      the path  webapp/  so Main.java can locate it at runtime via
-      getClass().getResource("/webapp") or extract it to a temp dir.
-    -->
     <resources>
+      <resource><directory>src/main/resources</directory></resource>
       <resource>
-        <directory>src/main/resources</directory>
-      </resource>
-      <resource>
-        <!-- Include webapp files so they ship inside the fat JAR -->
         <directory>src/main/webapp</directory>
         <targetPath>webapp</targetPath>
       </resource>
     </resources>
-
   </build>
-
 </project>

@@ -1,7 +1,12 @@
 variables.tf
-main.tf
 terraform.tfstate
 terraform.tfstate.backup
-deploy.sh
 .terraform.lock.hcl
 .terraform
+target/
+*.class
+*.jar
+.idea/
+*.iml
+.DS_Store
+*.log

@@ -6,19 +6,10 @@ import jakarta.servlet.http.HttpServlet;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.servlet.http.HttpSession;
-
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 
-/**
- * CalculatorServlet
- *
- * POST /calculate  →  reads num1, num2, operator
- *                  →  calls Calculator.evaluate()
- *                  →  sets result/error as request attributes
- *                  →  forwards to index.jsp
- */
 @WebServlet("/calculate")
 public class CalculatorServlet extends HttpServlet {
 
@@ -37,12 +28,10 @@ public class CalculatorServlet extends HttpServlet {
             throws ServletException, IOException {
 
         req.setCharacterEncoding("UTF-8");
-
         String num1Str  = req.getParameter("num1");
         String num2Str  = req.getParameter("num2");
         String operator = req.getParameter("operator");
 
-        // ── Validate ─────────────────────────────────────────
         if (isBlank(num1Str) || isBlank(num2Str) || isBlank(operator)) {
             req.setAttribute("error", "Please fill in both numbers and choose an operator.");
             req.getRequestDispatcher("/index.jsp").forward(req, resp);
@@ -62,12 +51,9 @@ public class CalculatorServlet extends HttpServlet {
             return;
         }
 
-        // ── Calculate ─────────────────────────────────────────
         try {
             double result = calculator.evaluate(a, operator, b);
             String formatted = formatResult(result);
-
-            // Build expression string  e.g.  "12 + 8 = 20"
             String expression = formatNum(a) + " " + opSymbol(operator)
                               + " " + formatNum(b) + " = " + formatted;
 
@@ -77,11 +63,10 @@ public class CalculatorServlet extends HttpServlet {
             req.setAttribute("num2", formatNum(b));
             req.setAttribute("operator", operator);
 
-            // ── History (stored in session) ───────────────────
             HttpSession session = req.getSession();
             List<String> history = (List<String>) session.getAttribute("history");
             if (history == null) history = new ArrayList<>();
-            history.add(0, expression);   // newest first
+            history.add(0, expression);
             if (history.size() > 10) history = history.subList(0, 10);
             session.setAttribute("history", history);
 
@@ -94,8 +79,6 @@ public class CalculatorServlet extends HttpServlet {
 
         req.getRequestDispatcher("/index.jsp").forward(req, resp);
     }
-
-    // ── Helpers ───────────────────────────────────────────────
 
     private String formatResult(double v) {
         if (Double.isInfinite(v) || Double.isNaN(v)) return "Error";
@@ -110,12 +93,9 @@ public class CalculatorServlet extends HttpServlet {
 
     private String opSymbol(String op) {
         switch (op) {
-            case "+": return "+";
-            case "-": return "−";
-            case "*": return "×";
-            case "/": return "÷";
-            case "%": return "mod";
-            case "^": return "^";
+            case "+": return "+";  case "-": return "−";
+            case "*": return "×";  case "/": return "÷";
+            case "%": return "mod"; case "^": return "^";
             default:  return op;
         }
     }
