@@ -37,7 +37,3 @@ output "master_ip" {
 output "worker_ip" {
   value = aws_instance.K8S_Worker.public_ip
 }
-
-jenkins_ip = "44.202.100.0"
-master_ip = "54.161.237.28"
-worker_ip = "44.204.46.96"
