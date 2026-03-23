@@ -1,5 +1,24 @@
-# Java Calculator — CI/CD Pipeline
-### Git → Maven → Jenkins (Freestyle) → Two EC2 Servers (Ubuntu)
+# Java Calculator — Complete CI/CD Pipeline
+### Git → Maven → Docker → Kubernetes → Jenkins
+
+---
+
+## Tech Stack
+
+| Layer | Technology | Version |
+|---|---|---|
+| Language | Java | 21 |
+| Frontend | JSP | — |
+| Web Server | Embedded Tomcat | 10.1.18 |
+| Packaging | Fat JAR (Maven Shade) | — |
+| Build Tool | Maven | 3.9.6 |
+| Testing | JUnit 5 | 5.10.0 |
+| Container | Docker | latest |
+| Orchestration | Kubernetes (kubeadm) | 1.29 |
+| CI/CD | Jenkins (Pipeline) | 2.x |
+| IaC | Terraform | — |
+| Version Control | Git + GitHub | — |
+| Image Registry | DockerHub | — |
 
 ---
 
@@ -7,27 +26,33 @@
 
 ```
 Local Machine
-     │
-     │  git push
-     ▼
-  GitHub
-     │
-     │  polls every 5 min
-     ▼
-EC2 #1 — Jenkins Server (t3.small)
-  Ubuntu 22.04
-  Java 21, Maven 3.9, Git, Jenkins :8080
-     │
-     │  scp JAR + ssh commands
-     ▼
-EC2 #2 — App Server (t2.micro)
-  Ubuntu 22.04
-  Java 21 only
-  calculator.jar :8080
-     │
-     ▼
-http://<APP-IP>:8080  ✅
+    │  git push
+    ▼
+GitHub → webhook → Jenkins EC2
+                        │
+                        ├── 1. mvn clean compile
+                        ├── 2. mvn test
+                        ├── 3. mvn package → calculator.jar
+                        ├── 4. docker build → image
+                        ├── 5. docker push → DockerHub
+                        └── 6. kubectl apply → K8s cluster
+                                    │
+                              K8s Master EC2
+                                    │  schedules pods
+                              K8s Worker EC2
+                                    │
+                              http://<NODE-IP>:30080 ✅
 ```
+
+---
+
+## Infrastructure
+
+| Server | Name | Public IP | Private IP | Instance Type |
+|---|---|---|---|---|
+| Jenkins    | `jenkins-server` |  | t3.small |
+| K8s Master | `Cal-K8S-Master` |  | c7i-flex.large |
+| K8s Worker | `Cal-K8S-Worker` |  | c7i-flex.large |
 
 ---
 
@@ -48,490 +73,505 @@ java-calculator/
 │   └── test/
 │       └── java/com/calculator/
 │           └── CalculatorTest.java     # JUnit 5 tests
+├── k8s/
+│   ├── deployment.yaml                 # K8s Deployment
+│   └── service.yaml                    # K8s NodePort Service
+├── Dockerfile                          # Multi-stage Docker build
+├── Jenkinsfile                         # Pipeline script from SCM
 ├── pom.xml                             # Maven build config
 └── .gitignore
 ```
 
 ---
 
-## PART 1 — LOCAL MACHINE
+## PART 1 — INFRASTRUCTURE (Terraform)
 
-### STEP 1 — Install Git
+### STEP 1 — main.tf
 
-```bash
-# Check
-git --version
+```hcl
+provider "aws" {
+    profile = "${var.profile}"
+    region  = "${var.region}"
+}
 
-# Install if missing
-sudo apt install -y git          # Ubuntu/Linux
-xcode-select --install           # Mac
-# Windows → https://git-scm.com
+resource "aws_instance" "Jenkins-server" {
+    ami                    = "${var.amis}"
+    instance_type          = "t3.small"
+    tags                   = { Name = "Jenkins-server" }
+    key_name               = "project-arovm"
+    vpc_security_group_ids = ["sg-03041bf59a541bfef"]
+}
+
+resource "aws_instance" "K8S_master" {
+    ami                    = "${var.amis}"
+    instance_type          = "c7i-flex.large"
+    tags                   = { Name = "Cal-K8S-Master" }
+    key_name               = "project-arovm"
+    vpc_security_group_ids = ["sg-0d0d16ea201f54d62"]
+}
+
+resource "aws_instance" "K8S_Worker" {
+    ami                    = "${var.amis}"
+    instance_type          = "c7i-flex.large"
+    tags                   = { Name = "Cal-K8S-Worker" }
+    key_name               = "project-arovm"
+    vpc_security_group_ids = ["sg-0d0d16ea201f54d62"]
+}
+
+output "jenkins_ip" { value = aws_instance.Jenkins-server.public_ip }
+output "master_ip"  { value = aws_instance.K8S_master.public_ip }
+output "worker_ip"  { value = aws_instance.K8S_Worker.public_ip }
 ```
 
-### STEP 2 — Create Project Structure
+### STEP 2 — Apply
 
 ```bash
-mkdir java-calculator
-cd java-calculator
-
-mkdir -p src/main/java/com/calculator
-mkdir -p src/main/webapp/WEB-INF
-mkdir -p src/test/java/com/calculator
+terraform init
+terraform plan
+terraform apply -auto-approve
 ```
 
-Copy all source files into the correct locations as shown in the project structure above.
+### STEP 3 — Get Private IPs (Windows PowerShell)
 
-### STEP 3 — Push to GitHub
-
-```bash
-cd java-calculator
-
-git init
-git add .
-git commit -m "feat: JSP calculator with embedded Tomcat"
-
-# Create repo on github.com first, then:
-git remote add origin https://github.com/<YOUR_USERNAME>/java-calculator.git
-git branch -M main
-git push -u origin main
+```powershell
+ssh -i C:\Users\parma\Downloads\project-arovm.pem ubuntu@IP1 "hostname -I"
+ssh -i C:\Users\parma\Downloads\project-arovm.pem ubuntu@IP2 "hostname -I"
+ssh -i C:\Users\parma\Downloads\project-arovm.pem ubuntu@IP3 "hostname -I"
 ```
-
-> **Note:** Check your default branch name on GitHub (main or master) and use that consistently.
 
 ---
 
-## PART 2 — AWS — LAUNCH TWO EC2 INSTANCES
+## PART 2 — SECURITY GROUP RULES
 
-### STEP 4 — Launch Jenkins EC2 (Server 1)
+### Jenkins Server
+| Port | Source | Purpose |
+|------|--------|---------|
+| 22 | Your IP | SSH |
+| 8080 | 0.0.0.0/0 | Jenkins UI + GitHub webhook |
 
-1. **AWS Console → EC2 → Launch Instance**
+### K8s Master
+| Port | Source | Purpose |
+|------|--------|---------|
+| 22 | Your IP | SSH |
+| 6443 | Jenkins Private IP | kubectl API |
+| 6443 | Worker Private IP | K8s API |
+| 10250 | Worker Private IP | Kubelet |
+| 2379-2380 | Master Private IP | etcd |
+| 30000-32767 | Your IP | NodePort App |
 
-   | Setting       | Value                                   |
-   |---------------|-----------------------------------------|
-   | Name          | `jenkins-server`                        |
-   | AMI           | Ubuntu 22.04 LTS                        |
-   | Instance type | `t3.small` (2 GB RAM minimum)           |
-   | Key pair      | Create new → download → save as `mykey.pem` |
-
-2. Security Group inbound rules:
-
-   | Port | Source  | Purpose    |
-   |------|---------|------------|
-   | 22   | Your IP | SSH        |
-   | 8080 | Your IP | Jenkins UI |
-
-3. Click **Launch Instance**
-
-### STEP 5 — Launch App EC2 (Server 2)
-
-1. **AWS Console → EC2 → Launch Instance**
-
-   | Setting       | Value                              |
-   |---------------|------------------------------------|
-   | Name          | `app-server`                       |
-   | AMI           | Ubuntu 22.04 LTS                   |
-   | Instance type | `t2.micro`                         |
-   | Key pair      | **Select same `mykey.pem`**        |
-
-2. Security Group inbound rules:
-
-   | Port | Source                  | Purpose                    |
-   |------|-------------------------|----------------------------|
-   | 22   | Your IP                 | SSH from your machine      |
-   | 22   | Jenkins EC2 Private IP  | SSH from Jenkins to deploy |
-   | 8080 | Your IP                 | Calculator App             |
-
-3. Click **Launch Instance**
-
-> After both launch, note down:
-> - Jenkins EC2 Public IP
-> - App EC2 Public IP
-> - App EC2 **Private IP** (used for Jenkins → App communication)
+### K8s Worker
+| Port | Source | Purpose |
+|------|--------|---------|
+| 22 | Your IP | SSH |
+| 10250 | Master Private IP | Kubelet |
+| 30000-32767 | Your IP | NodePort App |
 
 ---
 
-## PART 3 — SETUP JENKINS SERVER (EC2 #1)
+## PART 3 — JENKINS SERVER SETUP
 
-### STEP 6 — SSH into Jenkins Server
+### STEP 4 — Run install_jenkins.sh
 
 ```bash
-chmod 400 mykey.pem
-ssh -i mykey.pem ubuntu@<JENKINS_EC2_PUBLIC_IP>
+ssh -i project-arovm.pem ubuntu@44.202.100.0
 ```
 
-### STEP 7 — Install Java 21, Maven, Git, Jenkins
-
 ```bash
-# Update
+#!/usr/bin/env bash
+set -euo pipefail
+
+MVN_VERSION="3.9.6"
+JENKINS_KEY_ID="7198F4B714ABFC68"
+JAVA_HOME_PATH="/usr/lib/jvm/java-21-openjdk-amd64"
+
+echo "=== [1/6] System update ==="
 sudo apt update && sudo apt upgrade -y
 
-# Java 21
+echo "=== [2/6] Java 21 ==="
 sudo apt install -y openjdk-21-jdk
 java -version
 
-# Git
+echo "=== [3/6] Git ==="
 sudo apt install -y git
 git --version
 
-# Maven 3.9
-MVN_VERSION="3.9.6"
+echo "=== [4/6] Maven ${MVN_VERSION} ==="
 sudo curl -fsSL \
-  https://archive.apache.org/dist/maven/maven-3/${MVN_VERSION}/binaries/apache-maven-${MVN_VERSION}-bin.tar.gz \
+  "https://archive.apache.org/dist/maven/maven-3/${MVN_VERSION}/binaries/apache-maven-${MVN_VERSION}-bin.tar.gz" \
   -o /tmp/maven.tar.gz
 sudo tar -xzf /tmp/maven.tar.gz -C /opt/
-sudo ln -sfn /opt/apache-maven-${MVN_VERSION} /opt/maven
+sudo ln -sfn "/opt/apache-maven-${MVN_VERSION}" /opt/maven
 sudo ln -sfn /opt/maven/bin/mvn /usr/local/bin/mvn
+sudo rm -f /tmp/maven.tar.gz
 mvn -version
 
-# Jenkins
-sudo apt install -y curl gnupg2
-curl -fsSL https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key \
-    | sudo gpg --dearmor \
-    | sudo tee /usr/share/keyrings/jenkins-keyring.gpg > /dev/null
+echo "=== [5/6] Docker ==="
+sudo apt install -y docker.io
+sudo systemctl enable docker
+sudo systemctl start docker
+sudo usermod -aG docker ubuntu
 
-echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.gpg] \
-    https://pkg.jenkins.io/debian-stable binary/" \
+echo "=== [6/6] Jenkins ==="
+sudo apt install -y curl gnupg2 dirmngr
+sudo rm -f /usr/share/keyrings/jenkins-keyring.gpg \
+           /etc/apt/sources.list.d/jenkins.list
+sudo mkdir -p /root/.gnupg && sudo chmod 700 /root/.gnupg
+
+sudo gpg \
+  --no-default-keyring \
+  --keyring /usr/share/keyrings/jenkins-keyring.gpg \
+  --keyserver hkp://keyserver.ubuntu.com:80 \
+  --recv-keys "${JENKINS_KEY_ID}"
+
+echo "deb [signed-by=/usr/share/keyrings/jenkins-keyring.gpg] https://pkg.jenkins.io/debian-stable binary/" \
     | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
 
 sudo apt update
 sudo apt install -y jenkins
+sudo usermod -aG docker jenkins
 sudo systemctl enable jenkins
 sudo systemctl start jenkins
-sudo systemctl status jenkins   # should say: active (running)
-```
 
-### STEP 8 — Point Jenkins to Java 21
+# Point Jenkins to Java 21
+sudo sed -i \
+  's|^#.*Environment="JAVA_HOME=.*"|Environment="JAVA_HOME='"${JAVA_HOME_PATH}"'"|' \
+  /lib/systemd/system/jenkins.service
 
-```bash
-# Open Jenkins service file
-sudo nano /lib/systemd/system/jenkins.service
-
-# Search for JAVA_HOME (Ctrl+W → type JAVA_HOME → Enter)
-# Find this line:
-#Environment="JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64"
-
-# Remove the # to uncomment:
-Environment="JAVA_HOME=/usr/lib/jvm/java-21-openjdk-amd64"
-
-# Save: Ctrl+O → Enter → Ctrl+X
-```
-
-```bash
-# Reload and restart
 sudo systemctl daemon-reload
 sudo systemctl restart jenkins
 
-# Verify Java 21
-sudo -u jenkins java -version
-# should show: openjdk version "21.x.x"
-```
-
-### STEP 9 — Generate SSH Key for Jenkins User
-
-```bash
-sudo mkdir -p /var/lib/jenkins/.ssh
-
-sudo ssh-keygen -t rsa -b 4096 \
-    -f /var/lib/jenkins/.ssh/id_rsa \
-    -N ""
-
-sudo chown -R jenkins:jenkins /var/lib/jenkins/.ssh
-sudo chmod 700 /var/lib/jenkins/.ssh
-sudo chmod 600 /var/lib/jenkins/.ssh/id_rsa
-
-# Print public key — COPY THIS OUTPUT
-sudo cat /var/lib/jenkins/.ssh/id_rsa.pub
-```
-
----
-
-## PART 4 — SETUP APP SERVER (EC2 #2)
-
-### STEP 10 — SSH into App Server
-
-Open a **new terminal** on your local machine:
-
-```bash
-ssh -i mykey.pem ubuntu@<APP_EC2_PUBLIC_IP>
-```
-
-### STEP 11 — Install Java 21 Only
-
-```bash
-sudo apt update
-sudo apt install -y openjdk-21-jdk
-java -version
-
-# Create app directory
-sudo mkdir -p /opt/calculator
-sudo chown ubuntu:ubuntu /opt/calculator
-```
-
-### STEP 12 — Add Jenkins Public Key
-
-```bash
-mkdir -p ~/.ssh
-chmod 700 ~/.ssh
-
-nano ~/.ssh/authorized_keys
-# Paste the Jenkins public key from STEP 9
-# Save: Ctrl+O → Enter → Ctrl+X
-
-chmod 600 ~/.ssh/authorized_keys
-exit
-```
-
-### STEP 13 — Test SSH Connection
-
-Back on **Jenkins EC2**:
-
-```bash
-sudo -u jenkins ssh -o StrictHostKeyChecking=no \
-    ubuntu@<APP_EC2_PRIVATE_IP>
-
-# Should connect without password prompt ✅
-exit
-```
-
----
-
-## PART 5 — JENKINS UI SETUP
-
-### STEP 14 — Unlock Jenkins
-
-1. Open browser → `http://<JENKINS_EC2_PUBLIC_IP>:8080`
-2. Get password:
-
-```bash
+echo "Jenkins URL: http://$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4):8080"
+echo "Initial admin password:"
 sudo cat /var/lib/jenkins/secrets/initialAdminPassword
 ```
 
-3. Paste → **Continue**
-4. Click **"Install suggested plugins"** → wait
-5. Create admin user → **Save and Finish**
+```bash
+chmod +x install_jenkins.sh && ./install_jenkins.sh
+```
 
-### STEP 15 — Install Extra Plugins
+---
+
+## PART 4 — K8s NODES SETUP
+
+### STEP 5 — Run install_k8s_node.sh on Master AND Worker
+
+```bash
+# Master
+ssh -i project-arovm.pem ubuntu@54.161.237.28
+
+# Worker
+ssh -i project-arovm.pem ubuntu@44.204.46.96
+```
+
+Run on **both**:
+
+```bash
+cat > install_k8s_node.sh << 'SCRIPT'
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "=== [1/6] Update ==="
+sudo apt update && sudo apt upgrade -y
+
+echo "=== [2/6] Docker ==="
+sudo apt install -y docker.io
+sudo systemctl enable docker
+sudo systemctl start docker
+sudo usermod -aG docker ubuntu
+sudo mkdir -p /etc/docker
+sudo tee /etc/docker/daemon.json > /dev/null << 'DOCKEREOF'
+{
+  "exec-opts": ["native.cgroupdriver=systemd"]
+}
+DOCKEREOF
+sudo systemctl restart docker
+docker --version
+
+echo "=== [3/6] Disable swap ==="
+sudo swapoff -a
+sudo sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+echo "=== [4/6] Kernel modules ==="
+sudo tee /etc/modules-load.d/k8s.conf > /dev/null << 'MODEOF'
+overlay
+br_netfilter
+MODEOF
+sudo modprobe overlay
+sudo modprobe br_netfilter
+
+sudo tee /etc/sysctl.d/k8s.conf > /dev/null << 'SYSCTLEOF'
+net.bridge.bridge-nf-call-iptables  = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+net.ipv4.ip_forward                 = 1
+SYSCTLEOF
+sudo sysctl --system
+
+echo "=== [5/6] kubeadm kubelet kubectl ==="
+sudo apt install -y apt-transport-https ca-certificates curl gpg
+
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key \
+    | sudo gpg --dearmor \
+    -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" \
+    | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+sudo apt update
+sudo apt install -y kubelet kubeadm kubectl
+sudo apt-mark hold kubelet kubeadm kubectl
+
+echo "=== [6/6] Verify ==="
+docker --version
+kubeadm version
+kubectl version --client
+echo "=== Node ready! ==="
+SCRIPT
+
+chmod +x install_k8s_node.sh && ./install_k8s_node.sh
+```
+
+---
+
+## PART 5 — INITIALISE KUBERNETES CLUSTER
+
+### STEP 6 — Init on Master Only
+
+```bash
+ssh -i project-arovm.pem ubuntu@54.161.237.28
+
+sudo kubeadm init \
+    --pod-network-cidr=10.244.0.0/16 \
+    --apiserver-advertise-address=172.31.84.247
+```
+
+Copy the `kubeadm join` command from output.
+
+### STEP 7 — Configure kubectl on Master
+
+```bash
+mkdir -p $HOME/.kube
+sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+# Install Flannel
+kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
+
+kubectl get nodes
+```
+
+### STEP 8 — Join Worker
+
+```bash
+ssh -i project-arovm.pem ubuntu@44.204.46.96
+
+sudo kubeadm join 172.31.84.247:6443 \
+    --token xxxx \
+    --discovery-token-ca-cert-hash sha256:xxxx
+```
+
+Verify on Master:
+
+```bash
+kubectl get nodes
+# Cal-K8S-Master   Ready   control-plane
+# Cal-K8S-Worker   Ready   <none>
+```
+
+---
+
+## PART 6 — CONFIGURE JENKINS FOR K8s
+
+### STEP 9 — Install kubectl on Jenkins
+
+```bash
+ssh -i project-arovm.pem ubuntu@44.202.100.0
+
+curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.29/deb/Release.key \
+    | sudo gpg --dearmor \
+    -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.29/deb/ /" \
+    | sudo tee /etc/apt/sources.list.d/kubernetes.list
+
+sudo apt update && sudo apt install -y kubectl
+kubectl version --client
+```
+
+### STEP 10 — Copy kubeconfig to Jenkins
+
+On **Master**:
+```bash
+cat ~/.kube/config   # copy entire output
+```
+
+On **Jenkins**:
+```bash
+sudo mkdir -p /var/lib/jenkins/.kube
+sudo nano /var/lib/jenkins/.kube/config
+# paste → Ctrl+O → Enter → Ctrl+X
+
+sudo chown -R jenkins:jenkins /var/lib/jenkins/.kube
+sudo chmod 600 /var/lib/jenkins/.kube/config
+
+# Test
+sudo -u jenkins kubectl get nodes   # both nodes Ready ✅
+```
+
+---
+
+## PART 7 — JENKINS UI SETUP
+
+### STEP 11 — Unlock Jenkins
+
+1. Open `http://44.202.100.0:8080`
+2. `sudo cat /var/lib/jenkins/secrets/initialAdminPassword`
+3. Paste → **Install suggested plugins** → create admin user
+
+### STEP 12 — Install Extra Plugins
 
 **Manage Jenkins → Plugins → Available plugins**
 
-Search and install:
 - `Maven Integration`
 - `SSH Agent`
+- `Docker Pipeline`
 
-Check **"Restart Jenkins when done"** → log back in
+Restart when done.
 
-### STEP 16 — Configure Global Tools
+### STEP 13 — Configure Global Tools
 
 **Manage Jenkins → Tools**
 
-#### Find JAVA_HOME on Jenkins EC2:
-```bash
-sudo -u jenkins java -XshowSettings:property -version 2>&1 | grep java.home
-# output: java.home = /usr/lib/jvm/java-21-openjdk-amd64
 ```
+JDK:
+  Name:      JDK-21
+  JAVA_HOME: /usr/lib/jvm/java-21-openjdk-amd64
 
-#### JDK Section:
-```
-Add JDK
-Name:      JDK-21
-JAVA_HOME: /usr/lib/jvm/java-21-openjdk-amd64
-```
-
-#### Maven Section:
-```
-Add Maven
-Name:                  Maven-3.9
-Install automatically: ✅ checked
-Install from Apache
-Version:               3.9.6
+Maven:
+  Name:                  Maven-3.9
+  Install automatically: ✅
+  Version:               3.9.6
 ```
 
 Click **Save**
 
-### STEP 17 — Add SSH Credential for App Server
+### STEP 14 — Add Credentials
 
-```bash
-# Get Jenkins private key
-sudo cat /var/lib/jenkins/.ssh/id_rsa
-# Copy entire output including BEGIN and END lines
-```
-
-**Manage Jenkins → Credentials → System → Global credentials → Add Credentials**
+**Manage Jenkins → Credentials → Global → Add Credentials**
 
 ```
-Kind:        SSH Username with private key
-ID:          app-ec2-ssh-key
-Description: App Server SSH Key
-Username:    ubuntu
-Private Key: Enter directly → paste entire id_rsa content
-```
-
-Click **Create**
-
----
-
-## PART 6 — CREATE JENKINS JOB
-
-### STEP 18 — Create Freestyle Job
-
-1. **Dashboard → New Item**
-2. Name: `java-calculator`
-3. Select **Freestyle project** → **OK**
-
-### STEP 19 — General Tab
-
-```
-Description:         Java Calculator — JSP + Embedded Tomcat
-☑ Discard old builds
-  Max # of builds:   5
-```
-
-### STEP 20 — Source Code Management Tab
-
-```
-● Git
-Repository URL:  https://github.com/<YOU>/java-calculator.git
-
-Credentials → Add → Jenkins
+GitHub:
   Kind:     Username with password
-  Username: your GitHub username
-  Password: your GitHub Personal Access Token
-  → click Add → select from dropdown
+  ID:       github-creds
+  Username: GitHub username
+  Password: GitHub Personal Access Token
 
-Branch Specifier:  */main   (or */master — match your repo)
+DockerHub:
+  Kind:     Username with password
+  ID:       dockerhub-creds
+  Username: DockerHub username
+  Password: DockerHub access token
 ```
 
-### STEP 21 — Build Triggers Tab
+### STEP 15 — Create Pipeline Job
+
+1. **Dashboard → New Item → java-calculator → Pipeline → OK**
 
 ```
-☑ Poll SCM
-  Schedule:  H/5 * * * *
-```
+General:
+  ☑ Discard old builds → Max 5
 
-### STEP 22 — Build Environment Tab
+Build Triggers:
+  ☑ GitHub hook trigger for GITScm polling
 
-```
-☑ SSH Agent
-  Credentials: app-ec2-ssh-key
-```
-
-### STEP 23 — Build Steps Tab
-
-#### Step 1 → Invoke top-level Maven targets
-```
-Maven Version: Maven-3.9
-Goals:         clean compile
-```
-
-#### Step 2 → Invoke top-level Maven targets
-```
-Maven Version: Maven-3.9
-Goals:         test
-```
-
-#### Step 3 → Invoke top-level Maven targets
-```
-Maven Version: Maven-3.9
-Goals:         package -DskipTests
-```
-
-#### Step 4 → Execute shell
-```bash
-#!/bin/bash
-set -e
-
-APP_USER="ubuntu"
-APP_IP="<APP_EC2_PRIVATE_IP>"       # ← replace with real Private IP
-DEPLOY_DIR="/opt/calculator"
-JAR="calculator.jar"
-
-echo "=== Copying JAR to App Server ==="
-scp -o StrictHostKeyChecking=no \
-    target/${JAR} \
-    ${APP_USER}@${APP_IP}:${DEPLOY_DIR}/${JAR}
-
-echo "=== Stopping old process ==="
-ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_IP} \
-    "pkill -f ${JAR} || true"
-
-echo "=== Waiting for process to stop ==="
-ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_IP} \
-    "sleep 2"
-
-echo "=== Starting new version ==="
-ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_IP} \
-    "nohup java -jar ${DEPLOY_DIR}/${JAR} > ${DEPLOY_DIR}/app.log 2>&1 &"
-
-echo "=== Verifying app started ==="
-ssh -o StrictHostKeyChecking=no ${APP_USER}@${APP_IP} \
-    "sleep 4 && pgrep -f ${JAR} && echo 'App is running ✅' || echo 'App failed to start ❌'"
-
-echo "=== Deployment complete ==="
-```
-
-### STEP 24 — Post-build Actions Tab
-
-#### Action 1 → Publish JUnit test result report
-```
-Test report XMLs:  **/surefire-reports/*.xml
-```
-
-#### Action 2 → Archive the artifacts
-```
-Files to archive:  target/calculator.jar
+Pipeline:
+  Definition:   Pipeline script from SCM
+  SCM:          Git
+  URL:          https://github.com/Vicky0811/java-calculator-k8s.git
+  Credentials:  github-creds
+  Branch:       */main
+  Script Path:  Jenkinsfile
 ```
 
 Click **Save**
 
+### STEP 16 — Add GitHub Webhook
+
+GitHub repo → **Settings → Webhooks → Add webhook**
+
+```
+Payload URL:  http://44.202.100.0:8080/github-webhook/
+Content type: application/json
+Events:       Just the push event ✅
+```
+
 ---
 
-## PART 7 — RUN AND VERIFY
+## PART 8 — RUN PIPELINE
 
-### STEP 25 — Build Now
+### STEP 17 — Push Code
 
-1. **Dashboard → java-calculator → Build Now**
-2. Click **#1 → Console Output**
-
-Expected output:
+```bash
+cd java-calculator
+git init
+git add .
+git commit -m "feat: Java calculator — Docker + K8s + Jenkins"
+git remote add origin https://github.com/Vicky0811/java-calculator-k8s.git
+git branch -M main
+git push -u origin main
 ```
-[INFO] BUILD SUCCESS                  ← compile
-[INFO] Tests run: 16, Failures: 0    ← test
-[INFO] Building jar: calculator.jar  ← package
-=== Copying JAR to App Server ===
-=== Stopping old process ===
-=== Waiting for process to stop ===
-=== Starting new version ===
-=== Verifying app started ===
-App is running ✅
-=== Deployment complete ===
+
+### STEP 18 — Build Now
+
+**Dashboard → java-calculator → Build Now**
+
+```
+Checkout      ✅
+Build         ✅
+Test          ✅
+Package       ✅
+Docker Build  ✅
+Docker Push   ✅  → DockerHub
+Deploy to K8s ✅  → kubectl apply
+Verify        ✅  → 2/2 pods running
 Finished: SUCCESS
 ```
 
-### STEP 26 — Open the App
+### STEP 19 — Open App
 
 ```
-http://<APP_EC2_PUBLIC_IP>:8080/
+http://54.161.237.28:30080/   ← Master
+http://44.204.46.96:30080/    ← Worker
 ```
 
-### STEP 27 — Verify on App Server
+### STEP 20 — Test Auto Trigger
 
 ```bash
-ssh -i mykey.pem ubuntu@<APP_EC2_PUBLIC_IP>
-
-pgrep -a -f calculator.jar       # check process
-tail -f /opt/calculator/app.log  # check logs
+git add . && git commit -m "test: auto trigger" && git push origin main
+# Jenkins triggers instantly via webhook ✅
 ```
 
-### STEP 28 — Test Auto Trigger
+---
+
+## Useful Commands
 
 ```bash
-# Make any change locally then:
-git add .
-git commit -m "test: auto trigger pipeline"
-git push origin main
+# Kubernetes
+kubectl get all                                         # all resources
+kubectl get nodes                                       # node status
+kubectl get pods -o wide                                # pod locations
+kubectl logs <POD_NAME>                                 # pod logs
+kubectl describe pod <POD_NAME>                         # debug
+kubectl scale deployment java-calculator --replicas=3   # scale
+kubectl rollout undo deployment/java-calculator         # rollback
+kubectl delete -f k8s/                                  # delete all
 
-# Jenkins detects change within 5 minutes
-# Auto runs: compile → test → package → deploy ✅
+# Docker
+docker ps                    # running containers
+docker images                # local images
+
+# Jenkins
+sudo systemctl status jenkins    # check
+sudo systemctl restart jenkins   # restart
 ```
 
 ---
@@ -540,57 +580,29 @@ git push origin main
 
 | Problem | Fix |
 |---|---|
-| `Couldn't find any revision to build` | Branch name wrong — check `*/main` vs `*/master` |
-| `Permission denied (publickey)` on SCP | Jenkins public key not added to App server `~/.ssh/authorized_keys` |
-| Wrong IP in shell script | Use App EC2 **Private IP**, not Jenkins IP |
-| `package org.springframework.boot does not exist` | Delete `CalculatorApplicationTests.java` — it's a Spring Boot file not needed here |
-| Test reports not found | Use `**/surefire-reports/*.xml` pattern |
-| `CalculatorTest.java` not found by Maven | File must be at `src/test/java/com/calculator/CalculatorTest.java` |
-| Jenkins Java 17 end of life warning | Uncomment `JAVA_HOME` line in `/lib/systemd/system/jenkins.service` pointing to Java 21 |
-| Jenkins GPG key error on apt update | Use `gpg --dearmor` method to add Jenkins keyring |
-| App not starting on App server | Check `/opt/calculator/app.log` for errors |
+| Jenkins GPG key error | Use `gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys 7198F4B714ABFC68` |
+| K8s repo malformed entry | Use single line echo — no backslash continuation |
+| Nodes NotReady | Wait 2-3 min, check Flannel: `kubectl get pods -n kube-system` |
+| Jenkins kubectl fails | Copy kubeconfig to `/var/lib/jenkins/.kube/config` |
+| Docker permission denied | `sudo usermod -aG docker jenkins` + restart Jenkins |
+| Pods Pending | Check resources: `kubectl describe pod <name>` |
+| Image pull error | Check dockerhub-creds ID matches Jenkinsfile |
+| Webhook not triggering | Port 8080 open to `0.0.0.0/0` in security group |
+| Test reports not found | Use `**/surefire-reports/*.xml` |
+| Spring Boot test error | Delete `CalculatorApplicationTests.java` from repo |
 
 ---
 
-## Pipeline Summary
+## Pipeline Flow Summary
 
 ```
-Developer writes code
-        │
-        ▼  git push
-    GitHub repo
-        │
-        ▼  polls every 5 min
-  Jenkins (EC2 #1)
-        │
-        ├── mvn clean compile    Step 1 — compile
-        ├── mvn test             Step 2 — run 16 JUnit tests
-        ├── mvn package          Step 3 — build calculator.jar
-        └── Execute Shell        Step 4 — deploy
-              │
-              ├── scp JAR → App EC2
-              ├── ssh pkill old process
-              ├── ssh nohup java -jar (start new)
-              └── ssh pgrep (verify running)
-                        │
-                        ▼
-               App Server (EC2 #2)
-               http://<APP-IP>:8080 ✅
+git push
+    ↓ webhook
+Jenkins
+    ↓ mvn compile → mvn test → mvn package
+    ↓ docker build → docker push (DockerHub :BUILD_NUMBER + :latest)
+    ↓ kubectl apply → rolling update
+K8s Cluster
+    ↓ 2 pods running (1 on Master, 1 on Worker)
+http://<NODE-IP>:30080 ✅
 ```
-
----
-
-## Technology Stack
-
-| Layer | Technology | Version |
-|---|---|---|
-| Language | Java | 21 |
-| Frontend | JSP + HTML/CSS | — |
-| Web Server | Embedded Tomcat | 10.1.18 |
-| Packaging | Fat JAR (Maven Shade) | — |
-| Build Tool | Maven | 3.9.6 |
-| Testing | JUnit 5 | 5.10.0 |
-| Version Control | Git + GitHub | — |
-| CI/CD | Jenkins Freestyle | 2.x |
-| Jenkins Host | AWS EC2 Ubuntu | t3.small |
-| App Host | AWS EC2 Ubuntu | t2.micro |
